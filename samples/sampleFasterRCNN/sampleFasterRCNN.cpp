@@ -459,7 +459,11 @@ int main(int argc, char** argv)
 	PluginFactory pluginFactory;
 	IHostMemory *gieModelStream{ nullptr };
 	// batch size
-	const int N = 1;
+	int N;
+  	std::string arg1 = argv[1];
+  	std::stringstream ss;
+  	ss << argv[1];
+  	ss >> N;
 	caffeToGIEModel("faster_rcnn_test_iplugin.prototxt",
 		"VGG16_faster_rcnn_final.caffemodel",
 		std::vector < std::string > { OUTPUT_BLOB_NAME0, OUTPUT_BLOB_NAME1, OUTPUT_BLOB_NAME2 },
