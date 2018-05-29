@@ -12,27 +12,15 @@
 #include <memory>
 #include <cstring>
 #include <algorithm>
-#include <assert.h>
-#include <opencv2/core/core.hpp>
-#include <opencv2/highgui/highgui.hpp>
-#include <opencv2/opencv.hpp>
-#include <sstream>
-#include <sys/time.h>
-#include <queue>
-#include <pthread.h>
-#include <unistd.h>
-#include <omp.h>
 
 #include "NvCaffeParser.h"
 #include "NvInferPlugin.h"
 #include "common.h"
 
-
 static Logger gLogger;
 using namespace nvinfer1;
 using namespace nvcaffeparser1;
 using namespace plugin;
-using namespace cv;
 
 // stuff we know about the network and the caffe input/output blobs
 static const int INPUT_C = 3;
@@ -52,18 +40,9 @@ const char* OUTPUT_BLOB_NAME0 = "bbox_pred";
 const char* OUTPUT_BLOB_NAME1 = "cls_prob";
 const char* OUTPUT_BLOB_NAME2 = "rois";
 
-#define USE_MODE0 0
 
-#if USE_MODE0
-const int poolingH = 7;
-const int poolingW = 7;
-const float spatialScale = 0.0625f;
-#else
 const int poolingH = 6;
 const int poolingW = 6;
-const float spatialScale = 0.03125f;
-#endif
-
 const int featureStride = 16;
 const int preNmsTop = 6000;
 const int nmsMaxOut = 300;
@@ -71,16 +50,10 @@ const int anchorsRatioCount = 3;
 const int anchorsScaleCount = 3;
 const float iouThreshold = 0.7f;
 const float minBoxSize = 16;
-
+const float spatialScale = 0.03125f;
+//const float spatialScale = 0.0625f;
 const float anchorsRatios[anchorsRatioCount] = { 0.5f, 1.0f, 2.0f };
 const float anchorsScales[anchorsScaleCount] = { 8.0f, 16.0f, 32.0f };
-
-long GetTickCount()
-{
-	struct timeval tv;
-	gettimeofday(&tv,NULL);
-	return (tv.tv_sec*1000000+tv.tv_usec)/1000;
-}
 
 struct PPM
 {
@@ -92,13 +65,6 @@ struct PPM
 struct BBox
 {
 	float x1, y1, x2, y2;
-};
-
-struct DetectOutput
-{
-	BBox box;
-	float score;
-	std::string name;
 };
 
 std::string locateFile(const std::string& input)
@@ -147,7 +113,7 @@ void writePPMFileWithBBox(const std::string& filename, PPM& ppm, const BBox& bbo
 	}
 	outfile.write(reinterpret_cast<char*>(ppm.buffer), ppm.w * ppm.h * 3);
 }
-	
+
 void caffeToGIEModel(const std::string& deployFile,			// name for caffe prototxt
 	const std::string& modelFile,			// name for model 
 	const std::vector<std::string>& outputs,		// network outputs
@@ -158,7 +124,6 @@ void caffeToGIEModel(const std::string& deployFile,			// name for caffe prototxt
 	// create the builder
 	IBuilder* builder = createInferBuilder(gLogger);
 
-	
 	// parse the caffe model to populate the network, then set the outputs
 	INetworkDefinition* network = builder->createNetwork();
 	ICaffeParser* parser = createCaffeParser();
@@ -170,7 +135,7 @@ void caffeToGIEModel(const std::string& deployFile,			// name for caffe prototxt
 	const IBlobNameToTensor* blobNameToTensor = parser->parse(locateFile(deployFile).c_str(),
 		locateFile(modelFile).c_str(),
 		*network,
-		nvinfer1::DataType::kHALF);
+		DataType::kHALF);
 	std::cout << "End parsing model..." << std::endl;
 	// specify which tensors are outputs
 	for (auto& s : outputs)
@@ -178,7 +143,7 @@ void caffeToGIEModel(const std::string& deployFile,			// name for caffe prototxt
 
 	// Build the engine
 	builder->setMaxBatchSize(maxBatchSize);
-	builder->setMaxWorkspaceSize(1024 << 20);	// we need about 6MB of scratch space for the plugin layer for batch size 5
+	builder->setMaxWorkspaceSize(10 << 20);	// we need about 6MB of scratch space for the plugin layer for batch size 5
     builder->setHalf2Mode(true);
 
 	std::cout << "Begin building engine..." << std::endl;
@@ -198,9 +163,9 @@ void caffeToGIEModel(const std::string& deployFile,			// name for caffe prototxt
 	shutdownProtobufLibrary();
 }
 
-void doInference(IExecutionContext* context, float* inputData, float* inputImInfo, float* outputBboxPred, float* outputClsProb, float *outputRois, int batchSize)
+void doInference(IExecutionContext& context, float* inputData, float* inputImInfo, float* outputBboxPred, float* outputClsProb, float *outputRois, int batchSize)
 {
-	const ICudaEngine& engine = context->getEngine();
+	const ICudaEngine& engine = context.getEngine();
 	// input and output buffer pointers that we pass to the engine - the engine requires exactly IEngine::getNbBindings(),
 	// of these, but in this case we know that there is exactly 2 inputs and 3 outputs.
 	assert(engine.getNbBindings() == 5);
@@ -209,10 +174,10 @@ void doInference(IExecutionContext* context, float* inputData, float* inputImInf
 	// In order to bind the buffers, we need to know the names of the input and output tensors.
 	// note that indices are guaranteed to be less than IEngine::getNbBindings()
 	int inputIndex0 = engine.getBindingIndex(INPUT_BLOB_NAME0),
-	inputIndex1 = engine.getBindingIndex(INPUT_BLOB_NAME1),
-	outputIndex0 = engine.getBindingIndex(OUTPUT_BLOB_NAME0),
-	outputIndex1 = engine.getBindingIndex(OUTPUT_BLOB_NAME1),
-	outputIndex2 = engine.getBindingIndex(OUTPUT_BLOB_NAME2);
+		inputIndex1 = engine.getBindingIndex(INPUT_BLOB_NAME1),
+		outputIndex0 = engine.getBindingIndex(OUTPUT_BLOB_NAME0),
+		outputIndex1 = engine.getBindingIndex(OUTPUT_BLOB_NAME1),
+		outputIndex2 = engine.getBindingIndex(OUTPUT_BLOB_NAME2);
 
 
 	// create GPU buffers and a stream
@@ -228,25 +193,22 @@ void doInference(IExecutionContext* context, float* inputData, float* inputImInf
 	CHECK(cudaEventCreateWithFlags(&start, cudaEventBlockingSync));
 	CHECK(cudaEventCreateWithFlags(&end, cudaEventBlockingSync));
 
-	float total = 0, ms=0;
+	float total = 0, ms;
 	// DMA the input to the GPU,  execute the batch asynchronously, and DMA it back:
 	CHECK(cudaMemcpyAsync(buffers[inputIndex0], inputData, batchSize * INPUT_C * INPUT_H * INPUT_W * sizeof(float), cudaMemcpyHostToDevice, stream));
-
 	CHECK(cudaMemcpyAsync(buffers[inputIndex1], inputImInfo, batchSize * IM_INFO_SIZE * sizeof(float), cudaMemcpyHostToDevice, stream));
-
 	cudaEventRecord(start, stream);
-	context->enqueue(batchSize, buffers, stream, nullptr);
+	context.enqueue(batchSize, buffers, stream, nullptr);
 	cudaEventRecord(end, stream);
 	cudaEventSynchronize(end);
-
 	cudaEventElapsedTime(&ms, start, end);
 	total += ms;
 	std::cout << " runs  " << total << " ms." << std::endl;
-
 	CHECK(cudaMemcpyAsync(outputBboxPred, buffers[outputIndex0], batchSize * nmsMaxOut * OUTPUT_BBOX_SIZE * sizeof(float), cudaMemcpyDeviceToHost, stream));
 	CHECK(cudaMemcpyAsync(outputClsProb, buffers[outputIndex1], batchSize * nmsMaxOut * OUTPUT_CLS_SIZE * sizeof(float), cudaMemcpyDeviceToHost, stream));
 	CHECK(cudaMemcpyAsync(outputRois, buffers[outputIndex2], batchSize * nmsMaxOut * 4 * sizeof(float), cudaMemcpyDeviceToHost, stream));
 	cudaStreamSynchronize(stream);
+
 
 	// release the stream and the buffers
 	cudaStreamDestroy(stream);
@@ -490,49 +452,56 @@ std::vector<int> nms(std::vector<std::pair<float, int> >& score_index, float* bb
 	return indices;
 }
 
-int doInferenceWapper(IExecutionContext *context,cv::Mat &img,const int N,std::vector<DetectOutput> & outputs)
-{
-	std::vector<PPM> ppms(N);
-	float* data = new float[N*INPUT_C*INPUT_H*INPUT_W];
 
-	cv::Mat sample;
-	cv::cvtColor(img, sample, cv::COLOR_RGB2BGR);
+int main(int argc, char** argv)
+{
+	// create a GIE model from the caffe model and serialize it to a stream
+	PluginFactory pluginFactory;
+	IHostMemory *gieModelStream{ nullptr };
+	// batch size
+	const int N = 1;
+	caffeToGIEModel("faster_rcnn_test_iplugin.prototxt",
+		"VGG16_faster_rcnn_final.caffemodel",
+		std::vector < std::string > { OUTPUT_BLOB_NAME0, OUTPUT_BLOB_NAME1, OUTPUT_BLOB_NAME2 },
+		N, &pluginFactory, &gieModelStream);
+
+	pluginFactory.destroyPlugin();
+	// read a random sample image
+	srand(unsigned(time(nullptr)));
+	// available images 
+	std::vector<std::string> imageList = { "000456.ppm", "000542.ppm"};
+	std::vector<PPM> ppms(N);
 
 	float imInfo[N * 3]; // input im_info	
-
-	long t0=GetTickCount();	
-
-	//#pragma omp parallel for
+	std::random_shuffle(imageList.begin(), imageList.end(), [](int i) {return rand() % i; });
+	assert(ppms.size() <= imageList.size());
 	for (int i = 0; i < N; ++i)
 	{
-		imInfo[i * 3] = float(img.rows);   // number of rows
-		imInfo[i * 3 + 1] = float(img.cols); // number of columns
+		readPPMFile(imageList[i], ppms[i]);
+		imInfo[i * 3] = float(ppms[i].h);   // number of rows
+		imInfo[i * 3 + 1] = float(ppms[i].w); // number of columns
 		imInfo[i * 3 + 2] = 1;         // image scale
-
-		int width = img.cols;
-		int height = img.rows;
-		float* input_data = &data[i*INPUT_C*INPUT_H*INPUT_W];
-		vector<cv::Mat> input_channels;
-
-		for(int i=0;i<INPUT_C;i++)
-		{
-		    cv::Mat channel(height, width, CV_32FC1, input_data);
-		    input_channels.push_back(channel);
-		    input_data += height*width;
-		}
-
-		cv::Mat mean_(img.rows, img.cols, CV_32FC3, cv::Scalar(102.9801f, 115.9465f, 122.7717f));
-
-		cv::Mat sample_float;
-		sample.convertTo(sample_float, CV_32FC3);
-		cv::Mat sample_normalized;
-
-		cv::subtract(sample_float, mean_, sample_normalized);
-		cv::split(sample_normalized,input_channels);
 	}
 
-	long t1=GetTickCount();
-	printf("pre process usetime:%d\n",t1-t0);
+	float* data = new float[N*INPUT_C*INPUT_H*INPUT_W];
+	// pixel mean used by the Faster R-CNN's author
+	float pixelMean[3]{ 102.9801f, 115.9465f, 122.7717f }; // also in BGR order
+	for (int i = 0, volImg = INPUT_C*INPUT_H*INPUT_W; i < N; ++i)
+	{
+		for (int c = 0; c < INPUT_C; ++c)
+		{
+			// the color image to input should be in BGR order
+			for (unsigned j = 0, volChl = INPUT_H*INPUT_W; j < volChl; ++j)
+				data[i*volImg + c*volChl + j] = float(ppms[i].buffer[j*INPUT_C + 2 - c]) - pixelMean[c];
+		}
+	}
+
+	// deserialize the engine 
+	IRuntime* runtime = createInferRuntime(gLogger);
+	ICudaEngine* engine = runtime->deserializeCudaEngine(gieModelStream->data(), gieModelStream->size(), &pluginFactory);
+
+	IExecutionContext *context = engine->createExecutionContext();
+
 
 	// host memory for outputs 
 	float* rois = new float[N * nmsMaxOut * 4];
@@ -542,9 +511,14 @@ int doInferenceWapper(IExecutionContext *context,cv::Mat &img,const int N,std::v
 	// predicted bounding boxes
 	float* predBBoxes = new float[N * nmsMaxOut * OUTPUT_BBOX_SIZE];
 
-		// run inference
-	doInference(context, data, imInfo, bboxPreds, clsProbs, rois, N);
-	
+	// run inference
+	doInference(*context, data, imInfo, bboxPreds, clsProbs, rois, N);
+
+	// destroy the engine
+	context->destroy();
+	engine->destroy();
+	runtime->destroy();
+	pluginFactory.destroyPlugin();
 
 	// unscale back to raw image space
 	for (int i = 0; i < N; ++i)
@@ -585,215 +559,21 @@ int doInferenceWapper(IExecutionContext *context,cv::Mat &img,const int N,std::v
 			for (unsigned k = 0; k < indices.size(); ++k)
 			{
 				int idx = indices[k];
-#if 0
-				std::cout << "AAA==" << idx << std::endl;
 				std::string storeName = CLASSES[c] + "-" + std::to_string(scores[idx*OUTPUT_CLS_SIZE + c]) + ".ppm";
 				std::cout << "Detected " << CLASSES[c] << " in " << ppms[i].fileName << " with confidence " << scores[idx*OUTPUT_CLS_SIZE + c] * 100.0f << "% "
 					<< " (Result stored in " << storeName << ")." << std::endl;
-#endif
+
 				BBox b{ bbox[idx*OUTPUT_BBOX_SIZE + c * 4], bbox[idx*OUTPUT_BBOX_SIZE + c * 4 + 1], bbox[idx*OUTPUT_BBOX_SIZE + c * 4 + 2], bbox[idx*OUTPUT_BBOX_SIZE + c * 4 + 3] };
-				//writePPMFileWithBBox(storeName, ppms[i], b);
-
-
-				DetectOutput item;
-				item.box=b;
-				item.name=CLASSES[c];
-				item.score=scores[idx*OUTPUT_CLS_SIZE + c];
-				outputs.push_back(item);
+				writePPMFileWithBBox(storeName, ppms[i], b);
 			}
 		}
 	}
+
 
 	delete[] data;
 	delete[] rois;
 	delete[] bboxPreds;
 	delete[] clsProbs;
 	delete[] predBBoxes;
-}
-
-#define MAX_QUEUE_SIZE 32
-
-static queue<cv::Mat> images_queue;
-static pthread_mutex_t mutex;
-static int bRunning=true;
-
-static void *video_source_thread(void *arg)
-{
-	cv::VideoCapture *webcam = (cv::VideoCapture *)arg;
-	while (1)
-	{	
-		pthread_mutex_lock(&mutex);
-		cv::Mat img;
-		
-		if(images_queue.size()<MAX_QUEUE_SIZE)
-		{
-		  	*webcam >> img;
-			if(img.cols==0)
-			{
-			   printf("invalid image\n");
-			   pthread_mutex_unlock(&mutex);
-			   break;
-			}
-			images_queue.push(img.clone());
-			pthread_mutex_unlock(&mutex);	
-		}	
-		else
-		{
-			pthread_mutex_unlock(&mutex);	
-			usleep(1000);	
-		}		
-	}
-	bRunning=false;
-}
-
-int main(int argc, char** argv)
-{
-	printf("BuildTime:%s %s\n",__DATE__,__TIME__);
-
-	assert(argc==2);
-
-	pthread_mutex_init(&mutex,NULL);
-
-	string video_path = argv[1];
-	cv::VideoCapture webcam = cv::VideoCapture(video_path);
-	if (!webcam.isOpened())
-	{
-		webcam.release();
-		std::cerr << "Error during opening capture device!" << std::endl;
-		return 1;
-	}
-	else
-	{
-		std::cerr << "can open the video!" << std::endl;
-		pthread_t pid;
-		pthread_create(&pid,0,video_source_thread,&webcam);
-	}
-
-	// create a GIE model from the caffe model and serialize it to a stream
-	PluginFactory pluginFactory;
-	IHostMemory *gieModelStream{ nullptr };
-	// batch size
-
-	const int N = 32;
-	const int screen_w=1920;
-	const int screen_h=1080;
-	const int cols=8;
-	const int rows=4;
-
-	const int cell_w=screen_w/cols;
-	const int cell_h=screen_h/rows;
-	
-	cv::Size newSize;
-	newSize.height=cell_h;
-	newSize.width=cell_w;	
-
-	cv::Mat screen_image(screen_h, screen_w, CV_8UC3);
-
-#if USE_MODE0
-	caffeToGIEModel("faster_rcnn_test_iplugin.prototxt",
-		"VGG16_faster_rcnn_final.caffemodel",
-		std::vector < std::string > { OUTPUT_BLOB_NAME0, OUTPUT_BLOB_NAME1, OUTPUT_BLOB_NAME2 },
-		N, &pluginFactory, &gieModelStream);
-#else
-	caffeToGIEModel("faster_rcnn_test_iplugin.prototxt_xinkai",
-		"VGG16_faster_rcnn_final.caffemodel_xinkai",
-		std::vector < std::string > { OUTPUT_BLOB_NAME0, OUTPUT_BLOB_NAME1, OUTPUT_BLOB_NAME2 },
-		N, &pluginFactory, &gieModelStream);
-#endif
-	pluginFactory.destroyPlugin();
-	// read a random sample image
-	srand(unsigned(time(nullptr)));
-	// available images 
-
-	// deserialize the engine 
-	IRuntime* runtime = createInferRuntime(gLogger);
-	ICudaEngine* engine = runtime->deserializeCudaEngine(gieModelStream->data(), gieModelStream->size(), &pluginFactory);
-
-	IExecutionContext *context = engine->createExecutionContext();
-
-	//Read Video...
-	int nFrames = 0;
-	char s_image[30];
-	int time_interval=40;
-	
-	long counter=0;
-	long last_t=GetTickCount();
-	float fps=0;
-	
-	cv::namedWindow("img",CV_WINDOW_NORMAL|WINDOW_OPENGL);
-	setWindowProperty("img",CV_WND_PROP_FULLSCREEN,CV_WINDOW_FULLSCREEN);
-
-	while (bRunning)
-	{
-		pthread_mutex_lock(&mutex);
-
-		if(images_queue.empty())
-		{
-			pthread_mutex_unlock(&mutex);
-			printf("decode slow\n");
-			usleep(1000*40);
-			continue;	
-		}	
-
-		cv::Mat img=images_queue.front().clone();
-		images_queue.pop();
-		pthread_mutex_unlock(&mutex);		
-
-		nFrames++;
-#if 1
-		std::vector<DetectOutput> outputs;
-		doInferenceWapper(context,img,N,outputs);
-
-		for(auto a:outputs)
-		{
-		     stringstream ss;
-		     ss<<a.name<<"@"<<a.score;
-		     //cout<<ss.str();
-		     Rect rect(a.box.x1,a.box.y1,a.box.x2-a.box.x1,a.box.y2-a.box.y1);
-		     //cout<<rect<<endl;
-		     rectangle(img,rect,Scalar(0,0,255),2);
-		     putText(img,ss.str(),Point(a.box.x1,(a.box.y1+a.box.y2)/2),CV_FONT_HERSHEY_SIMPLEX,0.5,Scalar(0,255,0));
-		}
-		
-		if(counter++==30)
-		{
-			long this_t=GetTickCount();
-			fps=30.f/(this_t-last_t);
-			last_t=this_t;
-			counter=0;
-		}
-
-#endif
-		cv::Mat newSample;
-		cv::resize(img,newSample,newSize);
-		
-		//Scalar value(255,0,0);
-		//cv::Mat out=newSample;
-		//copyMakeBorder(newSample,out,2,2,2,2,BORDER_CONSTANT,value);
-
-
-		for(int i=0;i<rows;i++)
-		{
-			for(int j=0;j<cols;j++)
-			{
-			    newSample.copyTo(screen_image(cv::Rect(j*cell_w,i*cell_h,cell_w,cell_h)));
-			}
-		}
-
-		stringstream ss;
-		ss<<fps*1000<<" fps";
-		putText(screen_image,ss.str(),Point(10,30),CV_FONT_HERSHEY_SIMPLEX,0.5,Scalar(0,255,0));
-		imshow("img",screen_image);
-		
-		waitKey(1);	
-	}
-
-	// destroy the engine
-	context->destroy();
-	engine->destroy();
-	runtime->destroy();
-	pluginFactory.destroyPlugin();
-
 	return 0;
 }
-
