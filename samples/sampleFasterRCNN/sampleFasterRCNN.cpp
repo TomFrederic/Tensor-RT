@@ -469,7 +469,7 @@ int main(int argc, char** argv)
 	// read a random sample image
 	srand(unsigned(time(nullptr)));
 	// available images 
-	std::vector<std::string> imageList = { "000456.ppm", "000542.ppm"};
+	std::vector<std::string> imageList = { "000456.ppm", "000001.ppm","000002.ppm","000003.ppm","000004.ppm","000005.ppm","000006.ppm","000007.ppm","000008.ppm","000009.ppm","000010.ppm","000011.ppm","000012.ppm","000013.ppm","000014.ppm","000015.ppm","000016.ppm","000017.ppm","000018.ppm","000019.ppm","000020.ppm","000021.ppm","000022.ppm","000023.ppm","000024.ppm","000025.ppm","000026.ppm","000027.ppm","000028.ppm","000029.ppm","000030.ppm","000542.ppm"};
 	std::vector<PPM> ppms(N);
 
 	float imInfo[N * 3]; // input im_info	

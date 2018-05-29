@@ -1,4 +1,0 @@
-OUTNAME_RELEASE = digits
-OUTNAME_DEBUG   = digits
-MAKEFILE ?= Makefile.$(OUTNAME_RELEASE)
-include $(MAKEFILE)

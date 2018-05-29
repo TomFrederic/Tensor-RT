@@ -26,7 +26,7 @@ export VERBOSE
 export LIBDIR
 export TRIPLE
 export LOCALLIB
-samples=sampleMNIST sampleMNISTAPI sampleGoogleNet giexec sampleINT8 getDigits sampleCharRNN samplePlugin sampleFasterRCNN sampleUffMNIST sampleOnnxMNIST sampleNMT sampleMLP
+samples=giexec sampleFasterRCNN
 .PHONY: all clean help test test_debug test_release
 all: 
 	$(AT)$(foreach sample,$(samples), $(MAKE) -C $(sample) &&) :
