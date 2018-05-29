@@ -143,8 +143,8 @@ void caffeToGIEModel(const std::string& deployFile,			// name for caffe prototxt
 
 	// Build the engine
 	builder->setMaxBatchSize(maxBatchSize);
-	builder->setMaxWorkspaceSize(10 << 20);	// we need about 6MB of scratch space for the plugin layer for batch size 5
-    builder->setHalf2Mode(true);
+	builder->setMaxWorkspaceSize(1024 << 20);	// we need about 6MB of scratch space for the plugin layer for batch size 5
+    	builder->setHalf2Mode(true);
 
 	std::cout << "Begin building engine..." << std::endl;
 	ICudaEngine* engine = builder->buildCudaEngine(*network);
