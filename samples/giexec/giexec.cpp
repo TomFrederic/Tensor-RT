@@ -23,6 +23,8 @@ using namespace nvinfer1;
 using namespace nvcaffeparser1;
 using namespace nvonnxparser;
 
+
+float memcpy_time_all,memcpy_time = 0;
 #define CHECK(status)									\
 {														\
 	if (status != 0)									\
@@ -275,7 +277,18 @@ void createMemory(const ICudaEngine& engine, std::vector<void*>& buffers, const 
 		std::cerr << "Out of memory" << std::endl;
 		exit(1);
 	}
+	cudaStream_t stream;
+	CHECK(cudaStreamCreate(&stream));
+	cudaEvent_t start, end;
+	CHECK(cudaEventCreateWithFlags(&start, cudaEventBlockingSync));
+	CHECK(cudaEventCreateWithFlags(&end, cudaEventBlockingSync));
+
+	cudaEventRecord(start, stream);
 	CHECK(cudaMemcpy(deviceMem, localMem, memSize, cudaMemcpyHostToDevice));
+	cudaEventRecord(end, stream);
+	cudaEventSynchronize(end);
+	cudaEventElapsedTime(&memcpy_time, start, end);
+	memcpy_time_all += memcpy_time;
 
 	delete[] localMem;
 	buffers[bindingIndex] = deviceMem;	
@@ -286,6 +299,11 @@ void doInference(ICudaEngine& engine)
 	IExecutionContext *context = engine.createExecutionContext();
 	// input and output buffer pointers that we pass to the engine - the engine requires exactly IEngine::getNbBindings(),
 	// of these, but in this case we know that there is exactly one input and one output.
+	cudaStream_t stream;
+	CHECK(cudaStreamCreate(&stream));
+	cudaEvent_t start, end;
+	CHECK(cudaEventCreateWithFlags(&start, cudaEventBlockingSync));
+	CHECK(cudaEventCreateWithFlags(&end, cudaEventBlockingSync));
 
 	std::vector<void*> buffers(gInputs.size() + gParams.outputs.size());
 	for (size_t i = 0; i < gInputs.size(); i++)
@@ -294,11 +312,6 @@ void doInference(ICudaEngine& engine)
 	for (size_t i = 0; i < gParams.outputs.size(); i++)
 		createMemory(engine, buffers, gParams.outputs[i]);
 
-	cudaStream_t stream;
-	CHECK(cudaStreamCreate(&stream));
-	cudaEvent_t start, end;
-	CHECK(cudaEventCreateWithFlags(&start, cudaEventBlockingSync));
-	CHECK(cudaEventCreateWithFlags(&end, cudaEventBlockingSync));
 
 	for (int j = 0; j < gParams.iterations; j++)
 	{
@@ -323,7 +336,9 @@ void doInference(ICudaEngine& engine)
 			total += ms;
 		}
 		total /= gParams.avgRuns;
-		std::cout << "Average over " << gParams.avgRuns << " runs is " << total << " ms." << std::endl;
+		//std::cout << "Average over " << gParams.avgRuns << " runs is " << total << " ms." << std::endl;
+		std::cout << "Only inference latency is: " << total/gParams.batchSize << " ms." << std::endl;
+		std::cout << "End2End latency is: " << ( total + memcpy_time_all)/gParams.batchSize << " ms." << std::endl;
 	}
 
 
